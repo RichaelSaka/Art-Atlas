@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Art Atlas</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; overflow: hidden; }
+
+    /* Top bar */
+    #header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 24px; background: #16213e; border-bottom: 1px solid #0f3460;
+    }
+    #header h1 { font-size: 20px; font-weight: 600; }
+    #header .stats { font-size: 13px; color: #aaa; }
+
+    /* Filter bar */
+    #filters {
+      display: flex; gap: 8px; padding: 10px 24px; background: #16213e;
+      border-bottom: 1px solid #0f3460; flex-wrap: wrap; align-items: center;
+    }
+    #filters label { font-size: 12px; color: #aaa; margin-right: 4px; }
+    .toggle-btn {
+      padding: 5px 14px; border-radius: 20px; border: 1px solid #0f3460;
+      background: transparent; color: #aaa; font-size: 12px; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .toggle-btn.active { background: #0f3460; color: #e94560; border-color: #e94560; }
+    .toggle-btn:hover { border-color: #e94560; }
+
+    /* Main layout */
+    #main { display: flex; height: calc(100vh - 90px); }
+
+    /* Graph area */
+    #graph-container { flex: 1; position: relative; }
+    svg { width: 100%; height: 100%; }
+
+    /* Detail panel */
+    #detail-panel {
+      width: 320px; background: #16213e; border-left: 1px solid #0f3460;
+      padding: 20px; overflow-y: auto; display: none;
+    }
+    #detail-panel.open { display: block; }
+    #detail-panel h2 { font-size: 16px; margin-bottom: 8px; color: #e94560; }
+    #detail-panel h3 { font-size: 13px; margin: 12px 0 6px; color: #aaa; text-transform: uppercase; }
+    #detail-panel p { font-size: 13px; line-height: 1.5; color: #ccc; }
+    #detail-panel .close-btn {
+      float: right; background: none; border: none; color: #aaa;
+      font-size: 18px; cursor: pointer;
+    }
+    #detail-panel .close-btn:hover { color: #e94560; }
+
+    #detail-image {
+      width: 100%; border-radius: 6px; margin: 10px 0;
+      background: #0a0a1a; min-height: 80px;
+    }
+
+    /* Edge detail */
+    .edge-reason {
+      padding: 6px 10px; margin: 4px 0; border-radius: 4px;
+      font-size: 12px; background: #1a1a2e;
+    }
+
+    /* Tooltip */
+    #tooltip {
+      position: absolute; padding: 8px 12px; background: rgba(15,52,96,0.95);
+      border: 1px solid #e94560; border-radius: 4px; font-size: 12px;
+      pointer-events: none; display: none; max-width: 250px; z-index: 10;
+    }
+
+    /* Legend */
+    #legend {
+      position: absolute; bottom: 16px; left: 16px; background: rgba(22,33,62,0.9);
+      padding: 12px 16px; border-radius: 6px; font-size: 11px;
+      border: 1px solid #0f3460;
+    }
+    #legend div { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+    .legend-line { width: 24px; height: 3px; border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Art Atlas</h1>
+  <div class="stats" id="stats">Loading...</div>
+</div>
+
+<div id="filters">
+  <label>Show edges:</label>
+  <button class="toggle-btn active" data-type="culture">Culture</button>
+  <button class="toggle-btn active" data-type="medium">Medium</button>
+  <button class="toggle-btn active" data-type="classification">Classification</button>
+  <button class="toggle-btn active" data-type="colors">Colors</button>
+  <button class="toggle-btn active" data-type="temporal">Temporal</button>
+  <button class="toggle-btn active" data-type="places">Places</button>
+</div>
+
+<div id="main">
+  <div id="graph-container">
+    <svg id="graph"></svg>
+    <div id="tooltip"></div>
+    <div id="legend">
+      <div><span class="legend-line" style="background:#e94560"></span> Culture</div>
+      <div><span class="legend-line" style="background:#0f3460"></span> Medium</div>
+      <div><span class="legend-line" style="background:#00b4d8"></span> Classification</div>
+      <div><span class="legend-line" style="background:#2ec4b6"></span> Colors</div>
+      <div><span class="legend-line" style="background:#ff9f1c"></span> Temporal</div>
+      <div><span class="legend-line" style="background:#c77dff"></span> Places</div>
+    </div>
+  </div>
+
+  <div id="detail-panel">
+    <button class="close-btn" onclick="closePanel()">&times;</button>
+    <div id="detail-content"></div>
+  </div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// ── CONFIG ──
+const EDGE_COLORS = {
+  culture: "#e94560",
+  medium: "#0f3460",
+  classification: "#00b4d8",
+  colors: "#2ec4b6",
+  temporal: "#ff9f1c",
+  places: "#c77dff",
+};
+
+let activeTypes = new Set(Object.keys(EDGE_COLORS));
+let allNodes = [], allEdges = [], simulation;
+
+// ── LOAD DATA ──
+Promise.all([
+  fetch("../data/nodes.json").then(r => r.json()),
+  fetch("../data/edges.json").then(r => r.json()),
+]).then(([nodes, edges]) => {
+  allNodes = nodes;
+  allEdges = edges;
+
+  // Tag each edge with its primary reason type
+  allEdges.forEach(e => {
+    e.types = [];
+    e.reasons.forEach(r => {
+      const rl = r.toLowerCase();
+      if (rl.includes("culture")) e.types.push("culture");
+      else if (rl.includes("medium")) e.types.push("medium");
+      else if (rl.includes("classified")) e.types.push("classification");
+      else if (rl.includes("color")) e.types.push("colors");
+      else if (rl.includes("year") || rl.includes("created")) e.types.push("temporal");
+      else if (rl.includes("place")) e.types.push("places");
+    });
+    e.primaryType = e.types[0] || "medium";
+  });
+
+  document.getElementById("stats").textContent =
+    `${nodes.length} artworks \u00B7 ${edges.length} connections`;
+
+  initGraph();
+});
+
+// ── GRAPH ──
+function initGraph() {
+  const svg = d3.select("#graph");
+  const width = document.getElementById("graph-container").clientWidth;
+  const height = document.getElementById("graph-container").clientHeight;
+
+  const g = svg.append("g");
+
+  // Zoom
+  svg.call(d3.zoom()
+    .scaleExtent([0.1, 8])
+    .on("zoom", (event) => g.attr("transform", event.transform))
+  );
+
+  // Edges
+  const linkGroup = g.append("g").attr("class", "links");
+  // Nodes
+  const nodeGroup = g.append("g").attr("class", "nodes");
+
+  const filteredEdges = () => allEdges.filter(e =>
+    e.types.some(t => activeTypes.has(t))
+  );
+
+  let currentEdges = filteredEdges();
+
+  const link = linkGroup.selectAll("line")
+    .data(currentEdges)
+    .join("line")
+    .attr("stroke", d => EDGE_COLORS[d.primaryType])
+    .attr("stroke-opacity", 0.3)
+    .attr("stroke-width", d => d.weight * 3)
+    .on("mouseover", showEdgeTooltip)
+    .on("mouseout", hideTooltip)
+    .on("click", showEdgeDetail);
+
+  const node = nodeGroup.selectAll("circle")
+    .data(allNodes)
+    .join("circle")
+    .attr("r", 5)
+    .attr("fill", "#e94560")
+    .attr("stroke", "#1a1a2e")
+    .attr("stroke-width", 1)
+    .on("mouseover", showNodeTooltip)
+    .on("mouseout", hideTooltip)
+    .on("click", showNodeDetail)
+    .call(d3.drag()
+      .on("start", dragStart)
+      .on("drag", dragging)
+      .on("end", dragEnd)
+    );
+
+  simulation = d3.forceSimulation(allNodes)
+    .force("link", d3.forceLink(currentEdges)
+      .id(d => d.id)
+      .distance(80)
+    )
+    .force("charge", d3.forceManyBody().strength(-60))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide(8))
+    .on("tick", () => {
+      link
+        .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+      node
+        .attr("cx", d => d.x).attr("cy", d => d.y);
+    });
+
+  // ── FILTER TOGGLE ──
+  document.querySelectorAll(".toggle-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const type = btn.dataset.type;
+      btn.classList.toggle("active");
+      if (activeTypes.has(type)) activeTypes.delete(type);
+      else activeTypes.add(type);
+
+      const newEdges = filteredEdges();
+      linkGroup.selectAll("line")
+        .data(newEdges, d => d.source.id + "-" + d.target.id)
+        .join(
+          enter => enter.append("line")
+            .attr("stroke", d => EDGE_COLORS[d.primaryType])
+            .attr("stroke-opacity", 0.3)
+            .attr("stroke-width", d => d.weight * 3)
+            .on("mouseover", showEdgeTooltip)
+            .on("mouseout", hideTooltip)
+            .on("click", showEdgeDetail),
+          update => update,
+          exit => exit.remove()
+        );
+
+      simulation.force("link").links(newEdges);
+      simulation.alpha(0.3).restart();
+    });
+  });
+
+  // ── DRAG ──
+  function dragStart(event, d) {
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x; d.fy = d.y;
+  }
+  function dragging(event, d) { d.fx = event.x; d.fy = event.y; }
+  function dragEnd(event, d) {
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = null; d.fy = null;
+  }
+}
+
+// ── TOOLTIPS ──
+const tooltip = document.getElementById("tooltip");
+
+function showNodeTooltip(event, d) {
+  tooltip.style.display = "block";
+  tooltip.style.left = (event.pageX + 12) + "px";
+  tooltip.style.top = (event.pageY - 20) + "px";
+  tooltip.innerHTML = `<strong>${d.title}</strong><br>${d.artist || "Unknown"}<br>${d.medium || ""}`;
+}
+
+function showEdgeTooltip(event, d) {
+  const src = typeof d.source === "object" ? d.source : allNodes.find(n => n.id === d.source);
+  const tgt = typeof d.target === "object" ? d.target : allNodes.find(n => n.id === d.target);
+  tooltip.style.display = "block";
+  tooltip.style.left = (event.pageX + 12) + "px";
+  tooltip.style.top = (event.pageY - 20) + "px";
+  tooltip.innerHTML = `<strong>${src.title}</strong> &harr; <strong>${tgt.title}</strong>
+    <br><em>Click to see why</em>`;
+}
+
+function hideTooltip() { tooltip.style.display = "none"; }
+
+// ── DETAIL PANEL ──
+function showNodeDetail(event, d) {
+  const panel = document.getElementById("detail-panel");
+  const content = document.getElementById("detail-content");
+
+  let html = `<h2>${d.title}</h2>`;
+  if (d.image_url) html += `<img id="detail-image" src="${d.image_url}/full/!300,300/0/default.jpg" alt="${d.title}">`;
+  html += `<h3>Artist</h3><p>${d.artist || "Unknown"}</p>`;
+  html += `<h3>Date</h3><p>${d.date || "Unknown"}</p>`;
+  html += `<h3>Medium</h3><p>${d.medium || "Unknown"}</p>`;
+  html += `<h3>Culture</h3><p>${d.culture || "Unknown"}</p>`;
+  if (d.classification) html += `<h3>Classification</h3><p>${d.classification}</p>`;
+  if (d.places && d.places.length) html += `<h3>Places</h3><p>${d.places.join(", ")}</p>`;
+  if (d.colors && d.colors.length) {
+    html += `<h3>Colors</h3><div style="display:flex;gap:4px;flex-wrap:wrap;">`;
+    d.colors.forEach(c => {
+      html += `<span style="display:inline-block;width:20px;height:20px;background:${c};border-radius:3px;border:1px solid #333;" title="${c}"></span>`;
+    });
+    html += `</div>`;
+  }
+
+  content.innerHTML = html;
+  panel.classList.add("open");
+}
+
+function showEdgeDetail(event, d) {
+  const panel = document.getElementById("detail-panel");
+  const content = document.getElementById("detail-content");
+  const src = typeof d.source === "object" ? d.source : allNodes.find(n => n.id === d.source);
+  const tgt = typeof d.target === "object" ? d.target : allNodes.find(n => n.id === d.target);
+
+  let html = `<h2>Connection</h2>`;
+  html += `<p><strong>${src.title}</strong><br><em>${src.artist || "Unknown"}</em></p>`;
+  html += `<p style="text-align:center;font-size:20px;margin:8px 0;">&harr;</p>`;
+  html += `<p><strong>${tgt.title}</strong><br><em>${tgt.artist || "Unknown"}</em></p>`;
+  html += `<h3>Why are these connected?</h3>`;
+  d.reasons.forEach(r => {
+    html += `<div class="edge-reason">${r}</div>`;
+  });
+  html += `<h3>Connection strength</h3><p>${Math.round(d.weight * 100)}%</p>`;
+
+  content.innerHTML = html;
+  panel.classList.add("open");
+}
+
+function closePanel() {
+  document.getElementById("detail-panel").classList.remove("open");
+}
+</script>
+</body>
+</html>
