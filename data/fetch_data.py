@@ -1,8 +1,11 @@
 import requests
 import json
 import time
+import os
+from dotenv import load_dotenv
 
-API_KEY = "1a21c3e1-9d8b-4bba-96a5-79a8ffbb2bd2"
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+API_KEY = os.getenv("HAM_API_KEY")
 BASE_URL = "https://api.harvardartmuseums.org"
 
 def fetch_objects(total=500):
